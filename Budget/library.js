@@ -21,31 +21,46 @@ while (running) {
   if (choice == "1") {
     let title = prompt("Enter title: ");
     let author = prompt("Enter author: ");
-    let year = Number(prompt("Enter year: "));
+    let year = parseInt(prompt("Enter year: "));
     library.push({ title, author, year, isAvailable: true });
     console.log("Book added.");
   } 
   else if (choice == "2") {
     console.log("Available books:");
     for (let b of library) {
-      if (b.isAvailable) console.log(b.title);
+      if (b.isAvailable) {console.log(b.title)};
     }
   } 
   else if (choice == "3") {
     let title = prompt("Enter book title to borrow: ");
-    let book = library.find(b => b.title === title);
-    if (book && book.isAvailable) {
-      book.isAvailable = false;
-      console.log("Book borrowed.");
-    } else console.log("Book unavailable.");
+    let flag = false; 
+    for (let b of library) {
+      if (b.title === title) {
+        
+        b.isAvailable = false;
+        console.log("Book borrowed.");
+        flag = true;
+        break;
+      }
+    }
+    if(flag == false){
+      console.log("Book Unavailable.")
+    }
   } 
   else if (choice == "4") {
-    let title = prompt("Enter book title to return: ");
-    let book = library.find(b => b.title === title);
-    if (book) {
-      book.isAvailable = true;
-      console.log("Book returned.");
-    } else console.log("Book not found.");
+    let title = prompt("Enter book title to Return: ");
+    let flag = false; 
+    for (let b of library) {
+      if (b.title === title) { 
+        b.isAvailable = true;
+        console.log("Book Returned.");
+        flag = true;
+        break;
+      }
+    }
+    if(flag == false){
+      console.log("Book Unavailable.")
+    }
   } 
   else if (choice == "5") {
     let author = prompt("Enter author: ");
@@ -63,15 +78,22 @@ while (running) {
   } 
   else if (choice == "7") {
     let title = prompt("Enter book title to remove: ");
-    let index = library.findIndex(b => b.title === title);
-    if (index !== -1) {
-      library.splice(index, 1);
-      console.log("Book removed.");
-    } else console.log("Book not found.");
+    let flag = false;
+    for (let i = 0; i < library.length; i++) {
+      if (library[i].title === title) {
+        library.splice(i, 1);
+        console.log("Book removed.");
+        flag = true;
+        break; 
+      }
+    }
+    if (flag == false) {
+      console.log("Book not found.");
+    }
   } 
   else if (choice == "8") {
     running = false;
-    console.log("Exiting...");
+    console.log("Exiting");
   } 
   else {
     console.log("Invalid choice.");
