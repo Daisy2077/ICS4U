@@ -2,18 +2,43 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
+const mongoose = require("mongoose");
 const { connectDB } = require("./db");
-
-const mongoose = require("mongoose"); 
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+const { Types } = mongoose;
+
+
+function toObjectId(id) {
+  if (typeof id !== "string") return null;
+  if (!Types.ObjectId.isValid(id)) return null;
+  const oid = new Types.ObjectId(id);
+  return String(oid) === id ? oid : null;
+}
+
+
+function applyApiIdTransform(schema) {
+  const transform = (doc, ret) => {
+    
+    delete ret.id;
+
+    ret.id = String(ret._id);
+
+   
+    delete ret._id;
+
+    return ret;
+  };
+
+  schema.set("toJSON", { versionKey: false, transform });
+  schema.set("toObject", { versionKey: false, transform });
+}
 
 const studentSchema = new mongoose.Schema(
   {
-    id: { type: Number, required: true, unique: true },
     firstName: { type: String, required: true },
     lastName: { type: String, required: true },
     grade: { type: Number, required: true },
@@ -23,22 +48,22 @@ const studentSchema = new mongoose.Schema(
   { versionKey: false }
 );
 
+
 const testSchema = new mongoose.Schema(
   {
-    id: { type: Number, required: true },
-    studentId: { type: Number, required: true },
+    studentId: { type: mongoose.Schema.Types.ObjectId, required: true },
     testName: { type: String, required: true },
     date: { type: String, required: true },
     mark: { type: Number, required: true },
     outOf: { type: Number, required: true },
     weight: { type: Number },
   },
-  { _id: false }
+  { versionKey: false }
 );
+
 
 const courseSchema = new mongoose.Schema(
   {
-    id: { type: Number, required: true, unique: true },
     code: { type: String, required: true },
     name: { type: String, required: true },
     teacherId: { type: Number },
@@ -50,24 +75,13 @@ const courseSchema = new mongoose.Schema(
   { versionKey: false }
 );
 
+
+applyApiIdTransform(studentSchema);
+applyApiIdTransform(courseSchema);
+
 const Student = mongoose.model("Student", studentSchema);
 const Course = mongoose.model("Course", courseSchema);
 
-async function getNextId(Model) {
-  const last = await Model.findOne().sort({ id: -1 }).lean();
-  return last ? last.id + 1 : 1;
-}
-
-async function getNextTestId() {
-  const courses = await Course.find({}, { tests: 1 }).lean();
-  let max = 0;
-  for (const c of courses) {
-    for (const t of c.tests || []) {
-      if (typeof t.id === "number" && t.id > max) max = t.id;
-    }
-  }
-  return max + 1;
-}
 
 
 app.get("/", (req, res) => {
@@ -80,10 +94,11 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => res.json({ ok: true }));
 
 
+
 app.get("/students", async (req, res, next) => {
   try {
-    const students = await Student.find().sort({ id: 1 }).lean();
-    res.json(students);
+    const students = await Student.find().sort({ lastName: 1, firstName: 1 }); // NO lean()
+    res.json(students.map((s) => s.toJSON()));
   } catch (err) {
     next(err);
   }
@@ -91,10 +106,13 @@ app.get("/students", async (req, res, next) => {
 
 app.get("/students/:id", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
-    const student = await Student.findOne({ id }).lean();
+    const id = toObjectId(req.params.id);
+    if (!id) return res.status(400).json({ error: "Invalid id format" });
+
+    const student = await Student.findById(id);
     if (!student) return res.status(404).json({ error: "Student not found" });
-    res.json(student);
+
+    res.json(student.toJSON());
   } catch (err) {
     next(err);
   }
@@ -103,21 +121,20 @@ app.get("/students/:id", async (req, res, next) => {
 app.post("/students", async (req, res, next) => {
   try {
     const { firstName, lastName, grade, studentNumber, homeroom } = req.body;
+
     if (!firstName || !lastName || grade === undefined || !studentNumber) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const id = await getNextId(Student);
     const created = await Student.create({
-      id,
-      firstName,
-      lastName,
+      firstName: String(firstName),
+      lastName: String(lastName),
       grade: Number(grade),
       studentNumber: String(studentNumber),
-      homeroom,
+      homeroom: homeroom === undefined ? undefined : String(homeroom),
     });
 
-    res.status(201).json(created);
+    res.status(201).json(created.toJSON());
   } catch (err) {
     next(err);
   }
@@ -125,20 +142,29 @@ app.post("/students", async (req, res, next) => {
 
 app.put("/students/:id", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
+    const id = toObjectId(req.params.id);
+    if (!id) return res.status(400).json({ error: "Invalid id format" });
 
     const update = { ...req.body };
-    if (update.grade !== undefined) update.grade = Number(update.grade);
-    if (update.studentNumber !== undefined)
-      update.studentNumber = String(update.studentNumber);
 
-    const updated = await Student.findOneAndUpdate({ id }, update, {
+ 
+    if (update.grade !== undefined) update.grade = Number(update.grade);
+    if (update.studentNumber !== undefined) update.studentNumber = String(update.studentNumber);
+    if (update.firstName !== undefined) update.firstName = String(update.firstName);
+    if (update.lastName !== undefined) update.lastName = String(update.lastName);
+    if (update.homeroom !== undefined) update.homeroom = String(update.homeroom);
+
+
+    delete update._id;
+    delete update.id;
+
+    const updated = await Student.findByIdAndUpdate(id, update, {
       new: true,
       runValidators: true,
-    }).lean();
+    });
 
     if (!updated) return res.status(404).json({ error: "Student not found" });
-    res.json(updated);
+    res.json(updated.toJSON());
   } catch (err) {
     next(err);
   }
@@ -146,17 +172,18 @@ app.put("/students/:id", async (req, res, next) => {
 
 app.delete("/students/:id", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
+    const id = toObjectId(req.params.id);
+    if (!id) return res.status(400).json({ error: "Invalid id format" });
+
+    const exists = await Student.exists({ _id: id });
+    if (!exists) return res.status(404).json({ error: "Student not found" });
 
     const hasTests = await Course.exists({ "tests.studentId": id });
-    if (hasTests)
-      return res
-        .status(400)
-        .json({ error: "Cannot delete student with existing tests" });
+    if (hasTests) {
+      return res.status(400).json({ error: "Cannot delete student with existing tests" });
+    }
 
-    const deleted = await Student.findOneAndDelete({ id }).lean();
-    if (!deleted) return res.status(404).json({ error: "Student not found" });
-
+    await Student.deleteOne({ _id: id });
     res.json({ message: "Student deleted" });
   } catch (err) {
     next(err);
@@ -166,8 +193,8 @@ app.delete("/students/:id", async (req, res, next) => {
 
 app.get("/courses", async (req, res, next) => {
   try {
-    const courses = await Course.find().sort({ id: 1 }).lean();
-    res.json(courses);
+    const courses = await Course.find().sort({ code: 1 }); // NO lean()
+    res.json(courses.map((c) => c.toJSON()));
   } catch (err) {
     next(err);
   }
@@ -175,10 +202,24 @@ app.get("/courses", async (req, res, next) => {
 
 app.get("/courses/:id", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
-    const course = await Course.findOne({ id }).lean();
+    const id = toObjectId(req.params.id);
+    if (!id) return res.status(400).json({ error: "Invalid id format" });
+
+    const course = await Course.findById(id);
     if (!course) return res.status(404).json({ error: "Course not found" });
-    res.json(course);
+
+   
+    const out = course.toJSON();
+    out.tests = (course.tests || []).map((t) => {
+      const obj = t.toObject({ versionKey: false });
+      obj.id = String(obj._id);
+      delete obj._id;
+
+      obj.studentId = String(obj.studentId);
+      return obj;
+    });
+
+    res.json(out);
   } catch (err) {
     next(err);
   }
@@ -192,9 +233,7 @@ app.post("/courses", async (req, res, next) => {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const id = await getNextId(Course);
     const created = await Course.create({
-      id,
       code: String(code),
       name: String(name),
       teacherId: teacherId === undefined ? undefined : Number(teacherId),
@@ -204,7 +243,7 @@ app.post("/courses", async (req, res, next) => {
       tests: [],
     });
 
-    res.status(201).json(created);
+    res.status(201).json(created.toJSON());
   } catch (err) {
     next(err);
   }
@@ -212,18 +251,29 @@ app.post("/courses", async (req, res, next) => {
 
 app.put("/courses/:id", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
+    const id = toObjectId(req.params.id);
+    if (!id) return res.status(400).json({ error: "Invalid id format" });
 
     const update = { ...req.body };
-    if (update.teacherId !== undefined) update.teacherId = Number(update.teacherId);
 
-    const updated = await Course.findOneAndUpdate({ id }, update, {
+    if (update.code !== undefined) update.code = String(update.code);
+    if (update.name !== undefined) update.name = String(update.name);
+    if (update.teacherId !== undefined) update.teacherId = Number(update.teacherId);
+    if (update.semester !== undefined) update.semester = String(update.semester);
+    if (update.room !== undefined) update.room = String(update.room);
+    if (update.schedule !== undefined) update.schedule = String(update.schedule);
+
+    delete update._id;
+    delete update.id;
+    delete update.tests; // don’t allow overwriting tests via this PUT
+
+    const updated = await Course.findByIdAndUpdate(id, update, {
       new: true,
       runValidators: true,
-    }).lean();
+    });
 
     if (!updated) return res.status(404).json({ error: "Course not found" });
-    res.json(updated);
+    res.json(updated.toJSON());
   } catch (err) {
     next(err);
   }
@@ -231,33 +281,42 @@ app.put("/courses/:id", async (req, res, next) => {
 
 app.delete("/courses/:id", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
+    const id = toObjectId(req.params.id);
+    if (!id) return res.status(400).json({ error: "Invalid id format" });
 
-    const course = await Course.findOne({ id }).lean();
+    const course = await Course.findById(id);
     if (!course) return res.status(404).json({ error: "Course not found" });
 
     if ((course.tests || []).length > 0) {
       return res.status(400).json({ error: "Cannot delete course with existing tests" });
     }
 
-    await Course.deleteOne({ id });
+    await Course.deleteOne({ _id: id });
     res.json({ message: "Course deleted" });
   } catch (err) {
     next(err);
   }
 });
 
-
 app.get("/tests", async (req, res, next) => {
   try {
-    const courses = await Course.find({}, { tests: 1, id: 1 }).lean();
+    const courses = await Course.find({}, { tests: 1 }); 
+
     const all = [];
     for (const c of courses) {
+      const courseId = String(c._id);
       for (const t of c.tests || []) {
-        all.push({ ...t, courseId: c.id });
+        const obj = t.toObject({ versionKey: false });
+        obj.id = String(obj._id);
+        delete obj._id;
+
+        obj.studentId = String(obj.studentId);
+        obj.courseId = courseId;
+
+        all.push(obj);
       }
     }
-    all.sort((a, b) => a.id - b.id);
+
     res.json(all);
   } catch (err) {
     next(err);
@@ -266,13 +325,23 @@ app.get("/tests", async (req, res, next) => {
 
 app.get("/tests/:id", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
+    const testId = toObjectId(req.params.id);
+    if (!testId) return res.status(400).json({ error: "Invalid id format" });
 
-    const course = await Course.findOne({ "tests.id": id }, { tests: 1, id: 1 }).lean();
+    const course = await Course.findOne({ "tests._id": testId }, { tests: 1 });
     if (!course) return res.status(404).json({ error: "Test not found" });
 
-    const test = (course.tests || []).find((t) => t.id === id);
-    res.json({ ...test, courseId: course.id });
+    const test = (course.tests || []).find((t) => String(t._id) === String(testId));
+    if (!test) return res.status(404).json({ error: "Test not found" });
+
+    const obj = test.toObject({ versionKey: false });
+    obj.id = String(obj._id);
+    delete obj._id;
+
+    obj.studentId = String(obj.studentId);
+    obj.courseId = String(course._id);
+
+    res.json(obj);
   } catch (err) {
     next(err);
   }
@@ -282,46 +351,41 @@ app.post("/tests", async (req, res, next) => {
   try {
     const { studentId, courseId, testName, date, mark, outOf, weight } = req.body;
 
-    if (
-      studentId === undefined ||
-      courseId === undefined ||
-      !testName ||
-      !date ||
-      mark === undefined ||
-      outOf === undefined
-    ) {
+    if (!studentId || !courseId || !testName || !date || mark === undefined || outOf === undefined) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const sId = Number(studentId);
-    const cId = Number(courseId);
+    const sId = toObjectId(String(studentId));
+    const cId = toObjectId(String(courseId));
+    if (!sId) return res.status(400).json({ error: "Invalid studentId" });
+    if (!cId) return res.status(400).json({ error: "Invalid courseId" });
 
-    const studentExists = await Student.exists({ id: sId });
-    if (!studentExists) return res.status(400).json({ error: "Invalid studentId" });
+    const studentExists = await Student.exists({ _id: sId });
+    if (!studentExists) return res.status(400).json({ error: "Student not found" });
 
-    const courseExists = await Course.exists({ id: cId });
-    if (!courseExists) return res.status(400).json({ error: "Invalid courseId" });
+    const course = await Course.findById(cId);
+    if (!course) return res.status(400).json({ error: "Course not found" });
 
-    const testId = await getNextTestId();
-
-    const newTest = {
-      id: testId,
+    course.tests.push({
       studentId: sId,
       testName: String(testName),
       date: String(date),
       mark: Number(mark),
       outOf: Number(outOf),
       weight: weight === undefined ? undefined : Number(weight),
-    };
+    });
 
-    const result = await Course.updateOne({ id: cId }, { $push: { tests: newTest } });
+    await course.save();
 
-  
-    if (result.modifiedCount !== 1) {
-      return res.status(500).json({ error: "Failed to add test to course" });
-    }
+    const created = course.tests[course.tests.length - 1];
+    const obj = created.toObject({ versionKey: false });
+    obj.id = String(obj._id);
+    delete obj._id;
 
-    res.status(201).json({ ...newTest, courseId: cId });
+    obj.studentId = String(obj.studentId);
+    obj.courseId = String(course._id);
+
+    res.status(201).json(obj);
   } catch (err) {
     next(err);
   }
@@ -329,30 +393,45 @@ app.post("/tests", async (req, res, next) => {
 
 app.delete("/tests/:id", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
+    const testId = toObjectId(req.params.id);
+    if (!testId) return res.status(400).json({ error: "Invalid id format" });
 
-    const course = await Course.findOne({ "tests.id": id }, { id: 1 }).lean();
+    const course = await Course.findOne({ "tests._id": testId }, { _id: 1 });
     if (!course) return res.status(404).json({ error: "Test not found" });
 
-    await Course.updateOne({ id: course.id }, { $pull: { tests: { id } } });
+    await Course.updateOne({ _id: course._id }, { $pull: { tests: { _id: testId } } });
     res.json({ message: "Test deleted" });
   } catch (err) {
     next(err);
   }
 });
 
+
+
 app.get("/students/:id/tests", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
+    const studentId = toObjectId(req.params.id);
+    if (!studentId) return res.status(400).json({ error: "Invalid id format" });
 
-    const courses = await Course.find({ "tests.studentId": id }, { tests: 1, id: 1 }).lean();
+    const courses = await Course.find({ "tests.studentId": studentId }, { tests: 1 });
+
     const out = [];
     for (const c of courses) {
+      const courseId = String(c._id);
       for (const t of c.tests || []) {
-        if (t.studentId === id) out.push({ ...t, courseId: c.id });
+        if (String(t.studentId) === String(studentId)) {
+          const obj = t.toObject({ versionKey: false });
+          obj.id = String(obj._id);
+          delete obj._id;
+
+          obj.studentId = String(obj.studentId);
+          obj.courseId = courseId;
+
+          out.push(obj);
+        }
       }
     }
-    out.sort((a, b) => a.id - b.id);
+
     res.json(out);
   } catch (err) {
     next(err);
@@ -361,12 +440,23 @@ app.get("/students/:id/tests", async (req, res, next) => {
 
 app.get("/courses/:id/tests", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
-    const course = await Course.findOne({ id }, { tests: 1, id: 1 }).lean();
+    const courseId = toObjectId(req.params.id);
+    if (!courseId) return res.status(400).json({ error: "Invalid id format" });
+
+    const course = await Course.findById(courseId, { tests: 1 });
     if (!course) return res.status(404).json({ error: "Course not found" });
 
-    const out = (course.tests || []).map((t) => ({ ...t, courseId: course.id }));
-    out.sort((a, b) => a.id - b.id);
+    const out = (course.tests || []).map((t) => {
+      const obj = t.toObject({ versionKey: false });
+      obj.id = String(obj._id);
+      delete obj._id;
+
+      obj.studentId = String(obj.studentId);
+      obj.courseId = String(course._id);
+
+      return obj;
+    });
+
     res.json(out);
   } catch (err) {
     next(err);
@@ -375,35 +465,49 @@ app.get("/courses/:id/tests", async (req, res, next) => {
 
 app.get("/students/:id/average", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
+    const studentId = toObjectId(req.params.id);
+    if (!studentId) return res.status(400).json({ error: "Invalid id format" });
 
-    const courses = await Course.find({ "tests.studentId": id }, { tests: 1 }).lean();
-    const studentTests = [];
+    const courses = await Course.find({ "tests.studentId": studentId }, { tests: 1 });
+
+    const tests = [];
     for (const c of courses) {
       for (const t of c.tests || []) {
-        if (t.studentId === id) studentTests.push(t);
+        if (String(t.studentId) === String(studentId)) tests.push(t);
       }
     }
 
-    if (studentTests.length === 0) return res.json({ average: 0 });
+    if (tests.length === 0) return res.json({ average: 0 });
 
-    const avg =
-      studentTests.reduce((acc, x) => acc + (x.mark / x.outOf) * 100, 0) /
-      studentTests.length;
-
+    const avg = tests.reduce((acc, x) => acc + (Number(x.mark) / Number(x.outOf)) * 100, 0) / tests.length;
     res.json({ average: Number(avg.toFixed(2)) });
   } catch (err) {
     next(err);
   }
 });
 
+
+app.post("/admin/cleanup-legacy-ids", async (req, res, next) => {
+  try {
+    const s = await Student.updateMany({}, { $unset: { id: "" } });
+    const c = await Course.updateMany({}, { $unset: { id: "" } });
+    res.json({
+      studentsModified: s.modifiedCount ?? s.nModified ?? 0,
+      coursesModified: c.modifiedCount ?? c.nModified ?? 0,
+      message: "Legacy numeric id fields removed (if they existed).",
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+
 app.use((err, req, res, next) => {
   console.error(err);
-  const status = err.name === "ValidationError" ? 400 : 500;
-  res.status(status).json({
-    error: err.message || "Internal Server Error",
-  });
+  const status = err?.name === "ValidationError" ? 400 : 500;
+  res.status(status).json({ error: err?.message || "Internal Server Error" });
 });
+
 const PORT = process.env.PORT || 3000;
 
 connectDB()
