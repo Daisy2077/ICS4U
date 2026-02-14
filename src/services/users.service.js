@@ -1,14 +1,13 @@
+
 import { getCollection } from "../config/db.js";
 
 function usersCollection() {
   return getCollection("users");
 }
 
-export async function getAllUsers(filter) {
-  const f = filter || {};
-  return usersCollection().find(f).toArray();
+export async function getAllUsers(filter = {}) {
+  return usersCollection().find(filter).toArray();
 }
-
 
 export async function getUserByUserId(userId) {
   return usersCollection().findOne({ userId: userId });
